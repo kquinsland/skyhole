@@ -1,0 +1,9 @@
+# Do not need any key material from LE making it's way into git!
+*.pem
+acme.json
+
+# mac files
+.DS_Store
+
+# vsCode
+.vscode/
