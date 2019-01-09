@@ -1,0 +1,277 @@
+version: '3.5'
+services:
+  # The best damn DNS filtering tool out there; please support them!
+  # See: https://pi-hole.net/donate/
+  pihole:
+    container_name: pihole
+
+    # See: https://hub.docker.com/r/pihole/pihole/
+    image: pihole/pihole:latest
+    
+    # Always restart the container, unless operator has explicitly told us to stop
+    restart:  unless-stopped
+
+    networks:
+      # Because it's backend, no ports to open!
+      backend:
+        ipv4_address: 172.16.241.8
+
+    domainname: your.domain.here
+    hostname: pihole
+    
+    # TODO: get this implemented!
+    #depends_on:
+    #  coredns:
+    #    condition: service_healthy
+
+    labels:
+      # We want traefik to deal with this one
+      - "traefik.enable=true"
+      # and communicate with it over the backend network
+      - "traefik.docker.network=backend"
+      
+      # HTTP host
+      
+      
+      # TODO: see docs here: https://docs.traefik.io/user-guide/docker-and-lets-encrypt/#exposing-web-services-to-the-outside-world
+      # it MAY be possible to only require http auth on /admin
+      # (meaning that you'd still get HTTPS pihole blocked page w/o having to auth!)
+      # TODO: add in the whitelist of IPs / if you only want to make the piHole webadmin available from your home...
+      - "traefik.basic.frontend.rule=Host:skyhole.your.domain.here"
+      - "traefik.basic.port=80"
+      - "traefik.basic.protocol=http"
+
+    volumes:
+      # piHole will create it's various config files in these directories on first run
+      #
+      # see the note.md file in the `pihole` dir for info
+      - /opt/skyhole/docker/vol/pihole/etc/:/etc/pihole/
+      - /opt/skyhole/docker/vol/pihole/dnsmasq.d/:/etc/dnsmasq.d/
+      
+    dns:
+      # Sets your container's resolve settings to localhost to use the built-in dnsmasq
+      # TODO: does this even make it into resolv.conf?
+      - 127.0.0.1
+      # Sets a backup server of your choosing in case DNSMasq has problems starting
+      - 1.1.1.1
+
+    env_file:
+      # The IP address of core_dns instance
+      - env/pi.coredns_ip.env
+      # The PUBLIC IP of the instance must be set here
+      - env/pi.public_ip.env
+      # Actual Pihole server configuration vars
+      - env/pihole.env
+
+  # A wonderful little DNS server; used here to terminate DoT
+  coredns:
+    container_name: coredns
+
+    # See: https://hub.docker.com/r/coredns/coredns/
+    image: coredns/coredns:latest
+
+    # Always restart the container, unless operator has explicitly told us to stop
+    restart: unless-stopped
+
+    networks:
+      # TLS connections ingress over this guy
+      frontend:
+        ipv4_address: 172.16.240.9
+      # This is how we'll talk to the resolver in piHole
+      backend:
+        ipv4_address: 172.16.241.9
+    
+    domainname: your.domain.here
+    hostname: coredns
+
+    ports:
+      # We use CoreDNS to "terminate" the DNS over TLS connections (tcp/853)
+      - target: 853
+        published: 853
+        protocol: tcp
+        mode: host
+    
+    volumes:
+      # Config
+      - /opt/skyhole/docker/vol/coredns/config/Corefile:/Corefile:ro
+      - /opt/skyhole/docker/vol/coredns/config/plugin.cfg:/plugin.cfg:ro
+
+      # Certs for Dns over TLS
+      - /opt/skyhole/docker/vol/coredns/config/certs/fchain.pem:/fchain.pem:ro
+      - /opt/skyhole/docker/vol/coredns/config/certs/key.pem:/key.pem:ro
+
+    labels:
+      # We dont want to see this container as a front end in the traefik UX
+      - "traefik.enable=false"
+
+    ##
+    # Core DNS does not allow the use of hostnames for query targets, so links: pihole is out
+    # This means that we either need to write the pihole IP address to a volume/file or an env var
+    #
+    # I chose env var
+    ##
+    # The coredns docker image is TINY. 
+    # This makes it difficult to do the "look up the IP of PiHole container and use it as the forward-to host"
+    #   in the container
+    ##
+    # So unfortunately, this is the best i could come up with:
+    #   - Create the pihole container and get it running
+    #   - THEN use docker inspect to get the IP
+    #   - THEN write it into an env file
+    #   - THEN create the coredns container with the env file
+    ##
+    # NOW coredns will get the IP it should forward queries to dynamically
+    # Just not as seamless as i'd have liked
+    ##    
+    env_file:
+      - env/cdns.pihole_ip.env
+    
+    domainname: your.domain.here
+    hostname: coredns
+  
+  # A delightful frontend/reverse proxy with automatic LetsEncrypt support
+  traefik:
+    container_name: traefik
+    image: traefik:latest
+
+    # Always restart the container, unless operator has explicitly told us to stop
+    restart:  unless-stopped
+
+    # Enables the web UI and tells Traefik to listen to docker
+    command: --api --docker 
+
+    networks:
+      frontend:
+        ipv4_address: 172.16.240.10
+      backend:
+        ipv4_address: 172.16.241.10
+
+    ports:
+      # Traefik will take 80 and 443 and proxy to nodes on the back end
+      - target: 80
+        published: 80
+        protocol: tcp
+        mode: host
+      
+      - target: 443
+        published: 443
+        protocol: tcp
+        mode: host
+    
+        # And we'd also like the web UI; for now server firewal limits ingress here
+        #   TODO: get traefik to do auth for it's own portal?
+      - target: 8080
+        published: 8080
+        protocol: tcp
+        mode: host
+
+    volumes:
+      # the main config file
+      - /opt/skyhole/docker/vol/traefik/traefik.toml:/traefik.toml:ro
+      
+      # user / pass for pihole
+      - /opt/skyhole/docker/vol/traefik/.htpasswd:/.htpasswd:ro
+
+      # the ACME/Lets Encrypt cert data is stored here, i believe
+      # TODO: how to get the certs out / used in coreDNS (shared volume?)
+      - /opt/skyhole/docker/vol/traefik/acme.json:/acme.json
+
+      # This makes me nervous, as the container is now basically as powerful as root!
+      # but apparently, this is used to "listen" to events and configure new routes ... etc
+      - /var/run/docker.sock:/var/run/docker.sock
+
+    labels:
+      # We dont want to see this container as a front end in the traefik UX
+      - "traefik.enable=false"
+
+# A helper container that does nothing but watch trafeik's Lets Encrypt storage and trigger the keys & coredns containers
+  inotify:
+    container_name: inotify
+    #image: alpine:latest
+
+    # It's so small, not worth actually setting up docker-hub crap...
+    build:
+      context: ./helpers/inotify
+      dockerfile: Dockerfile
+
+    networks:
+      # only expose this on the backend network; we don't care what IP address it gets
+      backend:
+
+    volumes:
+      # As with traefik, this makes me nervous. We're sleeping soundly at night because:
+      # - no ports on this container and socket is RO
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      
+      # We need to mount the same dirs as the keys container
+      ## read only access to keys json
+      - /opt/skyhole/docker/vol/traefik/acme.json:/etc/traefik/acme.json:ro
+
+      ## read only access to the output of keys helper
+      # we expect a fchain.pem and key.pem to be written here by the keys helper
+      - /opt/skyhole/docker/vol/coredns/config/certs/:/etc/coredns:ro
+
+    environment:
+      # Which containers to restart
+      - 'CONTAINER1=keys'
+      - 'CONTAINER2=coredns'
+      # How long to wait (for restarting container2)
+      - 'COUNTDOWN=3'
+      # which vols we monitor
+      - 'VOLUMES=/etc/traefik/acme.json'
+      # curl SILENT mode; dont need to see the request / download stats in stdout / docker logs
+      - 'CURL_OPTIONS=-s'
+
+    restart: unless-stopped
+
+    labels:
+      # We dont want to see this container as a front end in the traefik UX
+      - "traefik.enable=false"
+  
+# A helper container that does nothing but extract the certificates from traefik for coredns
+  keys:
+    container_name: keys
+    # TODO: this is just for testing
+    # TODO: will need to introduce a BUILD section
+    # TODO: will need to make a dir...
+    #image: alpine:latest
+
+    # It's so small, not worth actually setting up docker-hub crap...
+    build:
+      context: ./helpers/keys
+      dockerfile: Dockerfile
+
+    # Always restart the container, unless operator has explicitly told us to stop
+    # TODO: this probably needs to be something else as this container is more of a 1 shot...
+    restart: on-failure
+
+    networks:
+      # only expose this on the backend network; we don't care what IP address it gets
+      backend:
+    
+    volumes:
+      # the ACME/Lets Encrypt cert data is stored here; we only need READ access
+      - /opt/skyhole/docker/vol/traefik/acme.json:/etc/traefik/acme.json:ro
+
+      # we'll need to WRITE out the full chain and key file for coredns
+      - /opt/skyhole/docker/vol/coredns/config/certs/:/etc/coredns:rw
+
+    labels:
+      # We dont want to see this container as a front end in the traefik UX
+      - "traefik.enable=false"
+  
+# We create two networks; one for inbound and one for backend
+networks:
+  frontend:
+    # use "pretty names" otherwise, docker-compose will generate pseudo random prefixes on the net names
+    name: frontend
+    # IPAM is IP Address Mgmt
+    ipam:
+      config:
+      - subnet: 172.16.240.0/24
+  backend:
+    name: backend
+    # IPAM is IP Address Mgmt
+    ipam:
+      config:
+      - subnet: 172.16.241.0/24

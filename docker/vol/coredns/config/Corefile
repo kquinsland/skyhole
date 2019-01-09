@@ -1,0 +1,67 @@
+##
+#   CoreDNS config file.
+#
+#       Defines:
+#        - what ports / protocols we listen on/for
+#        - what we do with the traffic reaching the listener
+#
+# See: https://coredns.io/manual/toc/
+#
+##
+
+# Listen for DNS over TLS
+# forward queries we get over plain dns to the piHole
+tls://.:853 {
+    # Log the query; this is not needed, but does help in debugging
+    # remove or comment out if desired
+    log
+
+    # Log any error that comes up from processing the query.
+    # very good idea to keep this
+    errors
+
+    # TLS is the star of the show
+    # at a minimum, the key/cert are required
+    # i do not need to use the optional third argument as the 
+    #   coreDNS docker image does use the CA certs from debian; they're backed in!
+    ##
+    # however, it appears that android devices really like the full certificate chain
+    #   so we provide the full certificate chain
+    ##
+    # See: https://coredns.io/plugins/tls/
+    tls fchain.pem key.pem
+    
+    # We use the $PIHOLE_IP environment variable to point coreDNS to the pihole
+    proxy . dns://{$PIHOLE_IP}
+}
+
+# Listen for plain old DNS queries
+# forward them to cloudflare over TLS
+##
+# because the coreDNS container has no port 53 exposed outside of the
+#   backend network, we can listen on 53 and know that only containers
+#   on the backend network can reach us. E.G. Only piHole will be 
+#   sending traffic to this listener.
+.:53 {
+
+    # Log any error that comes up from processing the query.
+    # very good idea to keep this
+    ##
+    # TODO: monitor for errors and alert!
+    errors
+    
+    # Forward off to cloudflare, over TLS
+    ##
+    # TODO: add in the IPv6 addresses
+    forward . tls://1.1.1.1 tls://1.0.0.1 {
+        # For IPv4: 1.1.1.1 and 1.0.0.1
+        # For IPv6: 2606:4700:4700::1111 and 2606:4700:4700::1001
+
+        # Since we're not mixing DNS providers, we can check the hostnames
+        #   this is a little bit of extra validation; totally optional
+        tls_servername tls.cloudflare-dns.com
+
+        # TODO: set up health_check and timeouts
+        # TODO: add in other DNS over TLS providers for better HA
+    }
+}
