@@ -32,7 +32,7 @@ tls://.:853 {
     tls fchain.pem key.pem
     
     # We use the $PIHOLE_IP environment variable to point coreDNS to the pihole
-    proxy . dns://{$PIHOLE_IP}
+    forward . dns://{$PIHOLE_IP}
 }
 
 # Listen for plain old DNS queries
