@@ -45,8 +45,8 @@ echo "dumping keys..."
 #   extract the useful bits of acme.json into teh `base64`
 #   binary to decode the b64 string into the pem format cert/key
 ##
-cat $CERT_JSON | jq -r $JQ_CRT | base64 -d > $CRT_FILE
-cat $CERT_JSON | jq -r $JQ_KEY | base64 -d > $KEY_FILE
+cat $CERT_JSON | jq -r '.Certificates[] | select(.Domain.Main=="my.domain.com") | .Certificate' | base64 -d > $CRT_FILE
+cat $CERT_JSON | jq -r '.Certificates[] | select(.Domain.Main=="my.domain.com") | .Key' | base64 -d > $KEY_FILE
 
 # 
 echo "done..."
